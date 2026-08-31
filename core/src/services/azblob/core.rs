@@ -52,6 +52,7 @@ pub mod constants {
     pub const X_MS_BLOB_TYPE: &str = "x-ms-blob-type";
     pub const X_MS_COPY_SOURCE: &str = "x-ms-copy-source";
     pub const X_MS_BLOB_CACHE_CONTROL: &str = "x-ms-blob-cache-control";
+    pub const X_MS_BLOB_CONTENT_TYPE: &str = "x-ms-blob-content-type";
     pub const X_MS_BLOB_CONDITION_APPENDPOS: &str = "x-ms-blob-condition-appendpos";
     pub const X_MS_META_PREFIX: &str = "x-ms-meta-";
 
@@ -491,6 +492,17 @@ impl AzblobCore {
         let mut req = self.insert_sse_headers(req);
         if let Some(cache_control) = args.cache_control() {
             req = req.header(constants::X_MS_BLOB_CACHE_CONTROL, cache_control);
+        }
+
+        // Put Block List is where Azure applies the blob's properties and metadata;
+        // the headers on the individual Put Block requests are ignored.
+        if let Some(ty) = args.content_type() {
+            req = req.header(constants::X_MS_BLOB_CONTENT_TYPE, ty);
+        }
+        if let Some(user_metadata) = args.user_metadata() {
+            for (key, value) in user_metadata {
+                req = req.header(format!("{X_MS_META_PREFIX}{key}"), value);
+            }
         }
 
         let content = quick_xml::se::to_string(&PutBlockListRequest {
