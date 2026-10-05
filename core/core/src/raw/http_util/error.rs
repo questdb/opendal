@@ -61,6 +61,8 @@ pub fn with_error_response_context(mut err: Error, mut parts: Parts) -> Error {
     parts.headers.remove("Set-Cookie");
     parts.headers.remove("WWW-Authenticate");
     parts.headers.remove("Proxy-Authenticate");
+    // GCS echoes the resumable upload session credential in this header.
+    parts.headers.remove("x-guploader-uploadid");
 
     if parts.headers.contains_key(http::header::LOCATION) {
         let location = crate::HttpUri::from_response_location(&mut parts)
@@ -81,12 +83,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_response_context_redacts_request_and_location() {
+    fn test_response_context_redacts_session_credentials() {
         let uri = "https://storage.googleapis.com/upload/storage/v1/b/bucket/o?uploadType=resumable&name=a%2Fb&upload_id=session-secret";
         let response = http::Response::builder()
             .status(503)
             .extension(uri.parse::<Uri>().unwrap())
             .header(http::header::LOCATION, uri)
+            .header("X-GUploader-UploadID", "session-secret")
+            .header("x-guploader-uploadid", "second-session-secret")
             .header("x-request-id", "request-123")
             .body(())
             .unwrap();
