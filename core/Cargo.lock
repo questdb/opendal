@@ -6415,6 +6415,7 @@ dependencies = [
  "http-body 1.1.0",
  "opendal-core",
  "reqwest",
+ "tokio",
 ]
 
 [[package]]

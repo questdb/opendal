@@ -57,3 +57,6 @@ opendal-core = { path = "../../core", version = "0.59.3", default-features = fal
 reqwest = { version = "0.13.4", features = [
   "stream",
 ], default-features = false }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }

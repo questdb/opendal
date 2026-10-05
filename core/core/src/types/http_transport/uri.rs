@@ -28,8 +28,9 @@ use percent_encoding::percent_decode_str;
 /// Clones share both representations; formatting does not repeat redaction.
 ///
 /// Recognized query names are `Signature`, `Policy`, `token`, `access_token`,
-/// `X-Amz-Signature`, and `X-Amz-Security-Token`, matched case-insensitively after
-/// decoding the name. Arbitrary application parameters are not classified.
+/// `upload_id`, `X-Amz-Signature`, and `X-Amz-Security-Token`, matched
+/// case-insensitively after decoding the name. Arbitrary application parameters
+/// are not classified.
 #[derive(Clone)]
 pub struct HttpUri {
     original: Arc<str>,
@@ -151,6 +152,7 @@ fn redact_uri(value: &str) -> String {
                     | "policy"
                     | "token"
                     | "access_token"
+                    | "upload_id"
                     | "x-amz-signature"
                     | "x-amz-security-token" => {
                         format!("{key}=[REDACTED]")
@@ -163,4 +165,29 @@ fn redact_uri(value: &str) -> String {
         value.replace_range(start + 1..end, &query);
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_upload_session_uri_redaction() {
+        for key in ["upload_id", "UPLOAD_ID", "upload%5Fid"] {
+            let original = format!(
+                "https://storage.googleapis.com/upload/storage/v1/b/bucket/o?uploadType=resumable&name=a%2Fb&{key}=session-secret&{key}=second-secret"
+            );
+            let uri = HttpUri::new(original.clone());
+            assert_eq!(uri.original_uri(), original);
+            assert_eq!(
+                uri.redacted_uri(),
+                format!(
+                    "https://storage.googleapis.com/upload/storage/v1/b/bucket/o?uploadType=resumable&name=a%2Fb&{key}=[REDACTED]&{key}=[REDACTED]"
+                )
+            );
+            let diagnostic = format!("{uri:?}");
+            assert!(!diagnostic.contains("session-secret"));
+            assert!(!diagnostic.contains("second-secret"));
+        }
+    }
 }

@@ -35,6 +35,7 @@ use opendal_core::HttpBody;
 use opendal_core::HttpRedirect;
 use opendal_core::HttpTransport;
 use opendal_core::HttpTransporter;
+use opendal_core::HttpUri;
 use opendal_core::Result;
 use opendal_core::raw::parse_content_encoding;
 use opendal_core::raw::parse_content_length;
@@ -91,7 +92,7 @@ impl HttpTransport for ReqwestTransport {
         let url = reqwest::Url::parse(target).map_err(|err| {
             Error::new(ErrorKind::Unexpected, "request url is invalid")
                 .with_operation("reqwest::fetch")
-                .with_context("url", uri.to_string())
+                .with_context("url", HttpUri::new(uri.to_string()).redacted_uri())
                 .set_source(err)
         })?;
 
@@ -143,7 +144,7 @@ impl HttpTransport for ReqwestTransport {
         let mut resp = req_builder.send().await.map_err(|err| {
             Error::new(ErrorKind::Unexpected, "send http request")
                 .with_operation("reqwest::send")
-                .with_context("url", uri.to_string())
+                .with_context("url", HttpUri::new(uri.to_string()).redacted_uri())
                 .with_temporary(is_temporary_error(&err))
                 .set_source(err.without_url())
         })?;
@@ -193,7 +194,7 @@ impl HttpTransport for ReqwestTransport {
                 .map_err(move |err| {
                     Error::new(ErrorKind::Unexpected, "read data from http response")
                         .with_operation("reqwest::fetch")
-                        .with_context("url", uri.to_string())
+                        .with_context("url", HttpUri::new(uri.to_string()).redacted_uri())
                         .with_temporary(is_temporary_error(&err))
                         .set_source(err.without_url())
                 }),
@@ -280,5 +281,117 @@ mod tests {
         let client = reqwest::Client::new();
         let transport = ReqwestTransport::from(client);
         assert_eq!(format!("{:?}", transport), "ReqwestTransport");
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod redaction_tests {
+    use super::*;
+    use opendal_core::raw::oio::ReadStream;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn test_invalid_url_error_redacts_credentials() {
+        let transport =
+            ReqwestTransport::new(reqwest::Client::builder().no_proxy().build().unwrap());
+        let request = Request::get("/upload?name=file&upload_id=session-secret")
+            .body(Buffer::new())
+            .unwrap();
+        let error = transport.fetch(request).await.err().unwrap();
+        assert_eq!(error.message(), "request url is invalid");
+        for diagnostic in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!diagnostic.contains("session-secret"), "{diagnostic}");
+            assert!(diagnostic.contains("name=file&upload_id=[REDACTED]"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transport_errors_redact_credentials_without_changing_requests() {
+        for fail_body in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let uri = format!(
+                "http://{}/upload?name=file&upload_id=session-secret",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(socket);
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert_eq!(
+                    line,
+                    "PUT /upload?name=file&upload_id=session-secret HTTP/1.1\r\n"
+                );
+                loop {
+                    line.clear();
+                    assert_ne!(stream.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = [0; 4];
+                stream.read_exact(&mut body).await.unwrap();
+                assert_eq!(&body, b"data");
+                if fail_body {
+                    stream
+                        .get_mut()
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nx",
+                        )
+                        .await
+                        .unwrap();
+                }
+            });
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap();
+            let transport = ReqwestTransport::new(client);
+            let request = Request::put(&uri).body(Buffer::from("data")).unwrap();
+            let result = transport.fetch(request).await;
+            let error = if fail_body {
+                let mut response = result.unwrap();
+                assert_eq!(
+                    response.extensions().get::<http::Uri>().unwrap(),
+                    uri.as_str()
+                );
+                response.body_mut().read_all().await.unwrap_err()
+            } else {
+                result.err().unwrap()
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(error.kind(), ErrorKind::Unexpected);
+            assert!(error.is_temporary());
+            assert_eq!(
+                error.message(),
+                if fail_body {
+                    "read data from http response"
+                } else {
+                    "send http request"
+                }
+            );
+            let source = std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<reqwest::Error>()
+                .unwrap();
+            assert!(source.url().is_none());
+            for diagnostic in [
+                error.to_string(),
+                format!("{error:?}"),
+                format!("{error:#?}"),
+            ] {
+                assert!(!diagnostic.contains("session-secret"), "{diagnostic}");
+                assert!(diagnostic.contains("name=file&upload_id=[REDACTED]"));
+            }
+        }
     }
 }

@@ -51,10 +51,10 @@ pub fn new_request_sign_error(err: anyhow::Error) -> Error {
 /// This helper function will:
 ///
 /// - remove sensitive or useless headers from parts.
-/// - fetch uri if parts extensions contains `Uri`.
+/// - add the redacted request URI if parts extensions contains `Uri`.
 pub fn with_error_response_context(mut err: Error, mut parts: Parts) -> Error {
     if let Some(uri) = parts.extensions.get::<Uri>() {
-        err = err.with_context("uri", uri.to_string());
+        err = err.with_context("uri", crate::HttpUri::new(uri.to_string()).redacted_uri());
     }
 
     // The following headers may contains sensitive information.
@@ -74,4 +74,40 @@ pub fn with_error_response_context(mut err: Error, mut parts: Parts) -> Error {
     err = err.with_context("response", format!("{parts:?}"));
 
     err
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_response_context_redacts_request_and_location() {
+        let uri = "https://storage.googleapis.com/upload/storage/v1/b/bucket/o?uploadType=resumable&name=a%2Fb&upload_id=session-secret";
+        let response = http::Response::builder()
+            .status(503)
+            .extension(uri.parse::<Uri>().unwrap())
+            .header(http::header::LOCATION, uri)
+            .header("x-request-id", "request-123")
+            .body(())
+            .unwrap();
+        let (parts, ()) = response.into_parts();
+        let error = with_error_response_context(
+            Error::new(ErrorKind::Unexpected, "backend unavailable").set_temporary(),
+            parts,
+        );
+        assert_eq!(error.kind(), ErrorKind::Unexpected);
+        assert!(error.is_temporary());
+        for diagnostic in [
+            error.to_string(),
+            format!("{error:?}"),
+            format!("{error:#?}"),
+        ] {
+            assert!(!diagnostic.contains("session-secret"), "{diagnostic}");
+            assert!(diagnostic.contains("upload_id=[REDACTED]"));
+            assert!(diagnostic.contains("name=a%2Fb"));
+            assert!(diagnostic.contains("request-123"));
+            assert!(diagnostic.contains("503"));
+            assert!(diagnostic.contains("backend unavailable"));
+        }
+    }
 }
