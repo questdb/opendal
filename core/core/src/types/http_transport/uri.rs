@@ -148,12 +148,14 @@ fn redact_uri(value: &str) -> String {
                 };
                 let name = percent_decode_str(key).decode_utf8_lossy();
                 match name.to_ascii_lowercase().as_str() {
-                    "signature"
+                    "sig"
+                    | "signature"
                     | "policy"
                     | "token"
                     | "access_token"
                     | "upload_id"
                     | "x-amz-signature"
+                    | "x-goog-signature"
                     | "x-amz-security-token" => {
                         format!("{key}=[REDACTED]")
                     }
@@ -188,6 +190,30 @@ mod tests {
             let diagnostic = format!("{uri:?}");
             assert!(!diagnostic.contains("session-secret"));
             assert!(!diagnostic.contains("second-secret"));
+        }
+    }
+
+    #[test]
+    fn test_signed_query_redaction() {
+        for (input, expected) in [
+            (
+                "https://acct.blob.core.windows.net/c/k?sv=2022-11-02&se=2030-01-01&sr=c&sp=rl&sig=FAKESECRET%3D",
+                "https://acct.blob.core.windows.net/c/k?sv=2022-11-02&se=2030-01-01&sr=c&sp=rl&sig=[REDACTED]",
+            ),
+            (
+                "https://acct.blob.core.windows.net/c/k?sv=2022-11-02&SIG=FAKESECRET%3D&si=id",
+                "https://acct.blob.core.windows.net/c/k?sv=2022-11-02&SIG=[REDACTED]&si=id",
+            ),
+            (
+                "https://storage.googleapis.com/b/o?X-Goog-Credential=id&x-goog-signature=0a1b&X-Goog-Expires=60",
+                "https://storage.googleapis.com/b/o?X-Goog-Credential=id&x-goog-signature=[REDACTED]&X-Goog-Expires=60",
+            ),
+            (
+                "https://s3.example.com/b/o?X-Amz-Credential=id&X-Amz-Signature=0a1b&X-Amz-Security-Token=FAKE",
+                "https://s3.example.com/b/o?X-Amz-Credential=id&X-Amz-Signature=[REDACTED]&X-Amz-Security-Token=[REDACTED]",
+            ),
+        ] {
+            assert_eq!(HttpUri::new(input.to_string()).redacted_uri(), expected);
         }
     }
 }
